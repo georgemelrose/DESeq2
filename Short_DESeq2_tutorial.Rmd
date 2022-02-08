@@ -1,0 +1,151 @@
+---
+title: "Short_DESeq2_Tutorial"
+author: "George Melrose"
+date: "08/02/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## DESeq2 Tutorial
+
+### Pasilla dataset
+
+The dataset used is from the Pasilla Bioconductor library derived from from the work from Brooks et al. (Conservation of an RNA regulatory map between Drosophila and mammals. Genome Research, 2010). 
+
+Alternative splicing is mostly controlled by proteins that directly bind to regulatory sequence elements and either repress or activate splicing of adjacent splice sites in a target pre-mRNA.In the following dataset, the scientists have combined RNAi- and mRNA-seq to ID exons regulated by Pasilla (PS).
+
+PS is the Drosophila ortholog of mamallian RNA-binding proteins NOVA1 and NOVA2.
+The pasilla library needs to be installed and loaded first. 
+```{r}
+BiocManager::install("pasilla")
+library("pasilla")
+```
+
+Now, using the *system.file()* and *read.table()* functions  a "pasilla_gene_counts.tsv" file can be generated that has counts for each gene (row) in each sample (column).
+
+```{r}
+datafile <- system.file("extdata/pasilla_gene_counts.tsv", package="pasilla")
+
+count_table <- read.table(datafile, header=TRUE, row.names = 1, quote = "", comment.char = "")
+head(count_table)
+
+#Genes not in any samples are discarded#
+count_table <- count_table[rowSums(count_table) > 0,]
+```
+
+### Filtering data according to experimental conditions
+
+Vectors are created for the experimental conditions of the samples and the type of library sequencing used. The sequencing vector can then be used to create an index and filter the count_table object to keep only paired-end samples. 
+
+Paired-end sequencing has advantages, WRT bioinformatics, over single-end. The data allows detection of genomics rearrangements, repetitive sequence elements, gene fusions, and novel transcripts. Paired-end sequencing produces twice the number of reads for the same preparatory work.
+
+```{r}
+cond_type <- c("untreated", "untreated", "untreated", "untreated", "treated", "treated", "treated")
+
+lib_type <- c("single-end", "single-end", "paired-end", "paired-end", "single-end", "paired-end","paired-end")
+
+#Creating an index for paired-end reads#
+isPaired <- lib_type == "paired-end"
+show(isPaired)
+
+#filter the dataset#
+count_table <- count_table[, isPaired]
+head(count_table)
+```
+### Making a DESeq dataset 
+
+```{r}
+BiocManager::install("DESeq2")
+library("DESeq2")
+library("gplots")
+library("RColorBrewer")
+
+#Creating a df for the name and conditions of the samples#
+samples <- data.frame(row.names = c("untreated3", "untreated4", "treated2","treated3"),condition=as.factor(c(rep("untreated",2),rep("treated",2))))
+
+#Making the DeSEQDataSet#
+pas <- DESeqDataSetFromMatrix(countData = count_table, colData=samples, design=~condition)
+
+#Selecting the condition to be compared#
+pas$condition <- factor(pas$condition,levels = c("untreated","treated"))
+```
+
+### Running the DESeq function
+
+The DESeq function does the following: estimates size factors; estimate dispersion; GLM fitting; Wald statistics.
+
+```{r}
+pas <- DESeq(pas)
+
+#Getting the results and putting into an object#
+res <- results(pas)
+
+#Sort results with adjusted P-values#
+resOrdered <- res[order(res$padj),]
+
+#Provide description for each column in the results output#
+mcols(res)$description
+
+#Write results to a csv file#
+write.csv(as.data.frame(resOrdered),file="pasilla_results.csv")
+
+#Normalised counts#
+write.csv(as.data.frame(counts(pas,normalized=TRUE)),file = "normalised_pasilla_counts.csv")
+```
+### Getting lists of genes
+
+```{r}
+#Significantly DEGs#
+sum(res$padj < 0.1, na.rm = TRUE)
+
+#An object w/ only significant genes#
+sig_genes <- res[which(res$padj < 0.1),]
+
+#Top 5 down-regulated genes by log2fold change#
+head(sig_genes[order(sig_genes$log2FoldChange),])
+
+#Most up-regulated genes by log2fold change#
+tail(sig_genes[order(sig_genes$log2FoldChange),])
+```
+
+
+### Results Plots
+
+A scatter plot of log2 fold changes (y-axis) vs the mean of normalised counts (x-axis). MA plots visualise the differences between measurements in 2 samples, transforming data onto M (log ratio) and A(mean average) scales.
+
+
+```{r, echo=FALSE}
+plotMA(res, main="DESeq2", ylim=c(-2,2))
+```
+
+A heatmap of the top 50 most expressed genes.
+
+```{r, echo=FALSE}
+select <- order(rowMeans(counts(pas,normalized = TRUE)),decreasing = TRUE)[1:50]
+hmcol <- colorRampPalette(brewer.pal(9,'YlOrRd'))(100)
+heatmap.2(counts(pas, normalized =TRUE)[select,], col =hmcol, Rowv = FALSE, Colv = FALSE, scale='none',dendrogram = 'none',trace = 'none',margins = c(10,6))
+```
+A heatmap of the top 50 differentially expressed genes, by adjusted p-value.
+
+```{r, echo=FALSE}
+select <- rownames(counts(pas,normalized = TRUE)%in%rownames(resOrdered[1:50,]))>heatmap.2(counts(pas,normalized = TRUE)[select,],col = hmcol,scale = 'row',trace = 'none',margins = c(10,6))
+```
+A correlation matrix between the samples.
+
+```{r, echo=FALSE}
+rld <- rlogTransformation(pas, blind = TRUE)
+distsRL <- dist(t(assay(rld)))
+hc <- hclust(distsRL)
+mat <- as.matrix(distsRL)
+heatmap.2(mat, Rowv = as.dendrogram(hc), symm = TRUE, trace = 'none',col=rev(hmcol),margins = c(13,13))
+```
+
+PCA plot
+
+```{r, echo=FALSE}
+plotPCA(rld, intgroup=c('condition'))
+```
+
